@@ -1,36 +1,83 @@
 module Nest
 
-export Indexer
+export Fields, Keys, Setter, @fields, @keys, @setter
 
-#-----------------------------------------------------------------------------# Indexer
-struct Indexer{T, K, V, P <: NamedTuple} <: AbstractDict{K, V}
-    parent::T
-    index_children::Dict{K, V}
-    prop_children::P
+#-----------------------------------------------------------------------------# utils
+abstract type PropertyMap{T} end
+
+item(x) = x
+item(x::PropertyMap) = getfield(x, :item)
+function Base.show(io::IO, x::T) where {T <: PropertyMap}
+    print(io, T.name.name, " of ")
+    Base.show(io, MIME("text/plain"), item(x))
 end
-function Indexer(x::T) where {T}
-    index(x) = x isa T ? Indexer(x) : x
-    Indexer(x,
-        Dict(k => getindex(x, k) for k in keys(x)),
-        NamedTuple(k => index(getproperty(x, k)) for k in propertynames(x))
-    )
+
+is_nestable(x) = false
+is_nestable(::AbstractDict) = true
+is_nestable(::PropertyMap) = true
+_wrap(T, x) = is_nestable(x) ? T(x) : x
+
+Base.length(x::PropertyMap) = length(item(x))
+Base.pairs(x::PropertyMap) = pairs(item(x))
+Base.iterate(x::PropertyMap, state...) = iterate(item(x), state...)
+
+
+#-----------------------------------------------------------------------------# Fields
+struct Fields{T} <: PropertyMap{T}
+    item::T
 end
-Base.summary(io::IO, idx::Indexer) = (print(io, "Indexer: "); summary(io, parent(idx)))
+Fields{T}() where {T} = Fields(T())
+Base.propertynames(o::Fields{T}) where {T} = fieldnames(T)
+Base.getproperty(o::Fields{T}, sym::Symbol) where {T} = _wrap(Fields, getfield(item(o), sym))
+Base.setproperty!(o::Fields{T}, sym::Symbol, val) where {T} = setfield!(item(o), sym, val)
 
-Base.iterate(idx::Indexer) = iterate(index_children(idx))
-Base.iterate(idx::Indexer, state) = iterate(index_children(idx), state)
-Base.length(idx::Indexer) = length(index_children(idx))
 
-parent(idx::Indexer) = getfield(idx, :parent)
-index_children(idx::Indexer) = getfield(idx, :index_children)
-prop_children(idx::Indexer) = getfield(idx, :prop_children)
+#-----------------------------------------------------------------------------# Keys
+struct Keys{T} <: PropertyMap{T}
+    item::T
+end
+Keys{T}() where {T} = Keys(T())
+Base.propertynames(k::Keys) = keys(item(k))
+Base.getproperty(k::Keys, sym::Symbol) = _wrap(Keys, getindex(item(k), sym))
+Base.setproperty!(k::Keys, sym::Symbol, val) = setindex!(getfield(k, :item), val, sym)
 
-Base.getindex(idx::Indexer, key) = index_children(idx)[key]
-Base.keys(idx::Indexer) = keys(index_children(idx))
-Base.values(idx::Indexer) = values(index_children(idx))
 
-Base.getproperty(idx::Indexer, key::Symbol) = prop_children(idx)[key]
-Base.propertynames(idx::Indexer) = propertynames(prop_children(idx))
+#-----------------------------------------------------------------------------# Setter
+struct Setter{T} <: PropertyMap{T}
+    item::T
+end
+
+Base.propertynames(s::Setter{T}) where {T} = propertynames(item(s))
+
+base_item(x) = x
+base_item(o::PropertyMap) = base_item(item(o))
+
+function Base.getproperty(s::Setter{T}, sym::Symbol) where {T}
+    hasproperty(s, sym) || setproperty!(item(s), sym, base_item(T()))
+    out = getproperty(item(s), sym)
+    _wrap(Setter{T}, out)
+end
+
+Base.setproperty!(s::Setter{T}, sym::Symbol, val) where {T} = setproperty!(item(s), sym, val)
+
+#-----------------------------------------------------------------------------# macros
+function wrap_first_arg(e::Expr, wrapper::Expr)
+    e.head == :. && return Expr(:., wrap_first_arg(e.args[1], wrapper), e.args[2:end]...)
+    e.head == :(=) && return Expr(:(=), wrap_first_arg(e.args[1], wrapper), e.args[2])
+    Expr(wrapper.head, wrapper.args..., e)
+end
+wrap_first_arg(e::Symbol, wrapper::Expr) = Expr(wrapper.head, wrapper.args..., e)
+
+macro fields(ex)
+    esc(wrap_first_arg(ex, Expr(:call, :(Nest.Fields))))
+end
+macro keys(ex)
+    esc(wrap_first_arg(ex, Expr(:call, :(Nest.Keys))))
+end
+macro setter(ex)
+    esc(wrap_first_arg(ex, Expr(:call, :(Nest.Setter))))
+end
+
 
 
 end
